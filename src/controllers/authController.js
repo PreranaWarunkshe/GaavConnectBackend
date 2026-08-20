@@ -13,7 +13,7 @@ const login = async (req, res, next) => {
       data: { user, token },
     });
   } catch (error) {
-   y
+   
     if (error.statusCode) {
       return ApiResponse.error(res, {
         statusCode: error.statusCode,
