@@ -1,69 +1,170 @@
 const jwt = require("jsonwebtoken");
-const { Op } = require("sequelize");
-const User = require("../models/User");
+const bcrypt = require("bcryptjs");
 
-/* ───────────────────────── helpers ───────────────────────── */
+const pool = require("../config/database");
 
-const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+/* ───────────────────────── Helpers ───────────────────────── */
 
-/**
- * Generate a signed JWT for the given user.
- */
+const isEmail = (value) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+};
+
+/* ───────────────────────── JWT ───────────────────────── */
+
 const generateToken = (user) => {
-  return jwt.sign(
-    { id: user.id, email: user.email, mobile: user.mobile },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-  );
+    return jwt.sign(
+        {
+            id: user.id,
+            email: user.email,
+            mobile: user.mobile
+        },
+        process.env.JWT_SECRET,
+        {
+            expiresIn: process.env.JWT_EXPIRES_IN || "7d"
+        }
+    );
 };
 
-/* ─────────────────────── login ──────────────────────────── */
+/* ───────────────────────── REGISTER ───────────────────────── */
 
-/**
- * Authenticate a user by email-or-mobile and password.
- *
- * @param {string} emailOrMobile - Email address or 10-digit mobile number.
- * @param {string} password      - Plain-text password.
- * @returns {{ user: object, token: string }}
- * @throws {Object} { statusCode, message }
- */
+const register = async (email, mobile, password) => {
+
+    // At least email or mobile is required
+    if (!email && !mobile) {
+        const error = new Error(
+            "At least one of email or mobile number must be provided"
+        );
+
+        error.statusCode = 400;
+        throw error;
+    }
+
+    // Check existing email
+    if (email) {
+        const [emailRows] = await pool.query(
+            "SELECT id FROM users WHERE email = ? LIMIT 1",
+            [email]
+        );
+
+        if (emailRows.length > 0) {
+            const error = new Error("Email already registered");
+            error.statusCode = 409;
+            throw error;
+        }
+    }
+
+    // Check existing mobile
+    if (mobile) {
+        const [mobileRows] = await pool.query(
+            "SELECT id FROM users WHERE mobile = ? LIMIT 1",
+            [mobile]
+        );
+
+        if (mobileRows.length > 0) {
+            const error = new Error("Mobile number already registered");
+            error.statusCode = 409;
+            throw error;
+        }
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Insert user
+    const [result] = await pool.query(
+        `
+        INSERT INTO users
+        (email, mobile, password)
+        VALUES (?, ?, ?)
+        `,
+        [email || null, mobile || null, hashedPassword]
+    );
+
+    // Get newly created user
+    const [rows] = await pool.query(
+        `
+        SELECT
+            id,
+            email,
+            mobile,
+            created_at,
+            updated_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [result.insertId]
+    );
+
+    const user = rows[0];
+
+    // Generate JWT
+    const token = generateToken(user);
+
+    return {
+        user,
+        token
+    };
+};
+
+/* ───────────────────────── LOGIN ───────────────────────── */
+
 const login = async (emailOrMobile, password) => {
-  // Build a dynamic where clause depending on input type
-  const whereClause = isEmail(emailOrMobile)
-    ? { email: emailOrMobile }
-    : { mobile: emailOrMobile };
 
-  // 1. Check if user exists
-  const user = await User.findOne({ where: whereClause });
+    const field = isEmail(emailOrMobile) ? "email" : "mobile";
 
-  if (!user) {
-    const error = new Error("User not found");
-    error.statusCode = 404;
-    throw error;
-  }
+    const [rows] = await pool.query(
+        `
+        SELECT
+            id,
+            email,
+            mobile,
+            password,
+            created_at,
+            updated_at
+        FROM users
+        WHERE ${field} = ?
+        LIMIT 1
+        `,
+        [emailOrMobile]
+    );
 
-  // 2. Compare password
-  const isMatch = await user.comparePassword(password);
+    if (rows.length === 0) {
+        const error = new Error("User not found");
+        error.statusCode = 404;
+        throw error;
+    }
 
-  if (!isMatch) {
-    const error = new Error("Invalid credentials");
-    error.statusCode = 401;
-    throw error;
-  }
+    const user = rows[0];
 
-  // 3. Generate JWT
-  const token = generateToken(user);
+    const isMatch = await bcrypt.compare(
+        password,
+        user.password
+    );
 
-  // Strip password from the returned user object
-  const userResponse = {
-    id: user.id,
-    email: user.email,
-    mobile: user.mobile,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-  };
+    if (!isMatch) {
+        const error = new Error("Invalid credentials");
+        error.statusCode = 401;
+        throw error;
+    }
 
-  return { user: userResponse, token };
+    const token = generateToken(user);
+
+    const userResponse = {
+        id: user.id,
+        email: user.email,
+        mobile: user.mobile,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
+    };
+
+    return {
+        user: userResponse,
+        token
+    };
 };
 
-module.exports = { login };
+module.exports = {
+    register,
+    login
+};

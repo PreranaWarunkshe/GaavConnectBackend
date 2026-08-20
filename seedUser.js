@@ -1,39 +1,69 @@
-require('dotenv').config();
-const sequelize = require('./src/config/database');
-const User = require('./src/models/User');
+require("dotenv").config();
+
+const bcrypt = require("bcryptjs");
+const pool = require("./src/config/database");
 
 const seedUser = async () => {
-  try {
-    await sequelize.authenticate();
-    await sequelize.sync({ alter: true }); // Ensure table exists
+  let connection;
 
-    const userEmail = "test@gaavconnect.com";
-    const userPassword = "GaavPassword123";
-    
+  try {
+    connection = await pool.getConnection();
+
+    console.log("Connected to MySQL database.");
+
+    const userEmail = "test1@gaavconnect.com";
+    const userPassword = "GaavPassword12";
+    const userMobile = "9876543220";
+
     // Check if user already exists
-    let user = await User.findOne({ where: { email: userEmail } });
-    
-    if (!user) {
-       user = await User.create({
-          email: userEmail,
-          password: userPassword,
-          mobile: "9876543210"
-       });
-       console.log("User created successfully!");
+    const [rows] = await connection.query(
+      "SELECT id, email, mobile FROM users WHERE email = ? LIMIT 1",
+      [userEmail]
+    );
+
+    if (rows.length === 0) {
+
+      // Hash password before storing
+      const hashedPassword = await bcrypt.hash(userPassword, 10);
+
+      await connection.query(
+        `INSERT INTO users 
+                (email, password, mobile)
+                VALUES (?, ?, ?)`,
+        [userEmail, hashedPassword, userMobile]
+      );
+
+      console.log("User created successfully!");
+
     } else {
-       // Update password if user exists so we are sure what it is
-       user.password = userPassword;
-       await user.save();
-       console.log("User already exists, password updated!");
+
+      // Update password
+      const hashedPassword = await bcrypt.hash(userPassword, 10);
+
+      await connection.query(
+        `UPDATE users
+                 SET password = ?
+                 WHERE email = ?`,
+        [hashedPassword, userEmail]
+      );
+
+      console.log("User already exists, password updated!");
     }
-    
+
     console.log(`Email: ${userEmail}`);
     console.log(`Password: ${userPassword}`);
-    
-    process.exit(0);
+
   } catch (error) {
-    console.error("Error seeding user:", error);
-    process.exit(1);
+
+    console.error("❌ Error seeding user:", error.message);
+
+  } finally {
+
+    if (connection) {
+      connection.release();
+    }
+
+    process.exit(0);
   }
 };
 
